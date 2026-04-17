@@ -121,11 +121,6 @@ run_scenario_pipeline <- function(scenario, full_mat, full_meta, config, out_dir
       n_perm = if(!is.null(config$stats$n_perm)) config$stats$n_perm else 999
     )
     res_list$dispersion <- as.data.frame(disp_obj$anova_table)
-    # [STAT] Assumption check for PERMANOVA
-    p_disp <- disp_obj$anova_table[1, "Pr(>F)"]
-    if (!is.na(p_disp) && p_disp < 0.05) {
-      warning(sprintf("      [!] Assumption Violated: Significant dispersion differences (p=%.4f) in scenario '%s'. PERMANOVA results may be biased.", p_disp, scenario$id))
-    }
   }, error = function(e) message(sprintf("      [Fail] Dispersion test failed: %s", e$message)))
   
   # 4. PERMANOVA
@@ -342,82 +337,4 @@ run_network_scenario_pipeline <- function(scenario, base_ctrl, base_case, config
     topo_case = topo_case,
     rewiring = rewiring_df
   ))
-}
-
-#' @title Create Detailed Inverted Edges Report
-#' @description Generates a comprehensive and readable Excel-ready dataframe 
-#'              focused on biological switches (Inverted edges).
-#' @param scenarios_results The scenarios list from payload04.
-#' @param config Global configuration object.
-#' @return A list of dataframes (Master_Summary and Scenario_Details).
-create_inverted_edges_report <- function(scenarios_results, config) {
-  require(dplyr)
-  require(tidyr)
-  
-  all_inverted <- list()
-  
-  # 1. Collect all significant inverted edges across all scenarios
-  for (scen_id in names(scenarios_results)) {
-    scen_data <- scenarios_results[[scen_id]]$edges_table
-    if (is.null(scen_data)) next
-    
-    # Filter for Significant Inverted edges
-    inv_df <- scen_data %>%
-      dplyr::filter(Edge_Category == "Inverted" & Significant == TRUE)
-    
-    if (nrow(inv_df) > 0) {
-      inv_df <- inv_df %>%
-        dplyr::mutate(
-          Edge_ID = paste(pmin(Node1, Node2), pmax(Node1, Node2), sep = "~"),
-          Scenario = scen_id
-        )
-      all_inverted[[scen_id]] <- inv_df
-    }
-  }
-  
-  if (length(all_inverted) == 0) return(NULL)
-  
-  full_df <- dplyr::bind_rows(all_inverted)
-  
-  # 2. Generate Master Summary (Edge-Centric)
-  master_summary <- full_df %>%
-    dplyr::group_by(Edge_ID, Node1, Node2) %>%
-    dplyr::summarise(
-      Occurrence_In_Scenarios = n(),
-      Present_In_Scenarios = paste(sort(unique(Scenario)), collapse = ", "),
-      Avg_Diff_Score = mean(Diff_Score, na.rm = TRUE),
-      # Check consistency of the flip direction (always the same polarity change?)
-      Polarity_Consistency = ifelse(length(unique(sign(Diff_Score))) == 1, "Consistent", "Variable"),
-      .groups = "drop"
-    )
-  
-  # Add Marker Categories if available in config
-  if (!is.null(config$qc_reporting$marker_categories)) {
-    # Helper to find category
-    get_cat <- function(node) {
-      for (cat in names(config$qc_reporting$marker_categories)) {
-        if (node %in% config$qc_reporting$marker_categories[[cat]]) return(cat)
-      }
-      return("Other")
-    }
-    master_summary <- master_summary %>%
-      dplyr::mutate(
-        Cat_Node1 = sapply(Node1, get_cat),
-        Cat_Node2 = sapply(Node2, get_cat)
-      )
-  }
-  
-  master_summary <- master_summary %>% dplyr::arrange(desc(Occurrence_In_Scenarios), desc(Avg_Diff_Score))
-  
-  # 3. Prepare list for Excel sheets
-  details_list <- list(Master_Inverted_Summary = master_summary)
-  
-  for (scen_id in names(all_inverted)) {
-    # Ensure sheet name is safe and descriptive
-    sheet_name <- substr(gsub("[^A-Za-z0-9_]", "_", scen_id), 1, 31)
-    details_list[[sheet_name]] <- all_inverted[[scen_id]] %>%
-      dplyr::select(Node1, Node2, starts_with("Pcor_"), starts_with("Spearman_"), Diff_Score, FDR)
-  }
-  
-  return(details_list)
 }

@@ -186,12 +186,8 @@ save_qc_report <- function(qc_list, out_path, config = NULL) {
   ep_subgroups <- grep("_EP$", all_subgroups, value = TRUE)
   ls_subgroups <- grep("_LS$", all_subgroups, value = TRUE)
   
-  # [ARCH] Data-driven control identification using global config
-  ctrl_refs <- if(!is.null(config$control_group)) as.character(unlist(config$control_group)) else "Healthy_Donors"
-  is_control_func <- function(g_name) {
-    # Check if the subgroup name matches the defined control group or its roots
-    any(sapply(ctrl_refs, function(ref) grepl(ref, g_name, ignore.case = TRUE)))
-  }
+  # Define logic for controls (assuming "Healthy" or "Control" in name)
+  is_control_func <- function(g_name) grepl("Healthy|Control", g_name, ignore.case = TRUE)
   ctrl_subgroups <- all_subgroups[sapply(all_subgroups, is_control_func)]
   
   df_clinical <- data.frame(Metric = metrics_summary, Total = c(total_init, total_dropped_combined, total_final), stringsAsFactors = FALSE)

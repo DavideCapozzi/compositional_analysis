@@ -176,60 +176,44 @@ for (scen in config$analysis_scenarios) {
 }
 
 # 3. META-ANALYSIS EXPORT
-message("\n--- PHASE 3: DIFFERENTIAL OVERLAP & INVERTED SIGNATURES ---")
+message("\n--- PHASE 3: DIFFERENTIAL OVERLAP ---")
 if (length(diff_edges_list) >= 2) {
   meta_dir <- file.path(results_dir, "Meta_Analysis")
   if (!dir.exists(meta_dir)) dir.create(meta_dir, recursive = TRUE)
   
-  # [ARCH] Dynamic scenario selection from config
+  # --- Categorical Edge Signature Heatmap ---
+  # Define the specific scenarios to track chronologically/phenotypically
   target_heat_scenarios <- sapply(config$analysis_scenarios, function(x) x$id)
-  # Ensure we only plot scenarios that successfully generated results
-  available_scen <- intersect(target_heat_scenarios, names(payload04$scenarios))
   
   message("   [Meta-Analysis] Generating Categorical Edge Signature Heatmap...")
   pdf(file.path(meta_dir, "Edge_Signature_Trajectories.pdf"), width = 10, height = 12)
   tryCatch({
     hm_obj <- viz_plot_categorical_edge_heatmap(
       scenarios_list = payload04$scenarios,
-      target_scenarios = available_scen,
+      target_scenarios = target_heat_scenarios,
       config = config,
       title = "Phenotypic Network Rewiring"
     )
     if (!is.null(hm_obj)) ComplexHeatmap::draw(hm_obj, merge_legend = TRUE)
   }, error = function(e) { 
-    message("   [Error] Signature Heatmap failed: ", e$message)
+    p_err <- ggplot2::ggplot() + 
+      ggplot2::annotate("text", x = 0, y = 0, label = paste("Heatmap Plot Error:", e$message), color = "darkred", size = 5, fontface = "bold") + 
+      ggplot2::theme_void()
+    print(p_err)
   })
   dev.off()
   
-  # [STAT] Extract ONLY Inverted Edges for specialized Meta-Analysis
-  inverted_edges_list <- list()
-  for (scen_id in names(payload04$scenarios)) {
-    scen_dat <- payload04$scenarios[[scen_id]]$edges_table
-    if (!is.null(scen_dat)) {
-      inv_ids <- scen_dat %>% 
-        dplyr::filter(Edge_Category == "Inverted" & Significant == TRUE) %>%
-        dplyr::mutate(Edge_ID = paste(pmin(Node1, Node2), pmax(Node1, Node2), sep="~")) %>%
-        dplyr::pull(Edge_ID)
-      if (length(inv_ids) > 0) inverted_edges_list[[scen_id]] <- inv_ids
-    }
-  }
-  
-  # Export Inverted Overlap if at least 2 scenarios have inversions
-  if (length(inverted_edges_list) >= 2) {
-    message("   [Meta-Analysis] Generating Inverted Edges Overlap...")
-    pdf(file.path(meta_dir, "Inverted_Edges_Overlap.pdf"), width = 8, height = 8)
-    viz_plot_differential_overlap(
-      edge_list = inverted_edges_list, 
-      fill_colors = scenario_colors, 
-      title = "Intersection of Inverted Interactions"
-    )
-    dev.off()
-    payload04$meta_analysis$inverted_edges_list <- inverted_edges_list
-  }
-  
-  # Standard UpSet/Venn for all significant edges
+  # --- Legacy: Standard UpSet/Venn Diagram ---
+  message("   [Meta-Analysis] Generating UpSet/Venn Overlap...")
   pdf(file.path(meta_dir, "Differential_Networks_Overlap.pdf"), width = 8, height = 8)
-  viz_plot_differential_overlap(edge_list = diff_edges_list, fill_colors = scenario_colors, title = "All Differential Edges Overlap")
+  tryCatch({
+    viz_plot_differential_overlap(edge_list = diff_edges_list, fill_colors = scenario_colors, title = "Differential Edges Overlap")
+  }, error = function(e) { 
+    p_err <- ggplot2::ggplot() + 
+      ggplot2::annotate("text", x = 0, y = 0, label = paste("Overlap Plot Error:", e$message), color = "darkred", size = 5, fontface = "bold") + 
+      ggplot2::theme_void()
+    print(p_err)
+  })
   dev.off()
   
   payload04$meta_analysis$diff_edges_list <- diff_edges_list
