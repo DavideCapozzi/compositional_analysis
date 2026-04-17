@@ -183,7 +183,7 @@ if (length(diff_edges_list) >= 2) {
   
   # --- Categorical Edge Signature Heatmap ---
   # Define the specific scenarios to track chronologically/phenotypically
-  target_heat_scenarios <- c("00_HDvsTumor", "01_HDvsEP", "02_HDvsLS", "03_EPvsLS")
+  target_heat_scenarios <- sapply(config$analysis_scenarios, function(x) x$id)
   
   message("   [Meta-Analysis] Generating Categorical Edge Signature Heatmap...")
   pdf(file.path(meta_dir, "Edge_Signature_Trajectories.pdf"), width = 10, height = 12)
