@@ -96,6 +96,7 @@ if (config$multivariate$run_plsda) {
     ) 
     top_drivers <- extract_plsda_loadings(pls_res)
     payload03$global$splsda_drivers <- top_drivers
+    payload03$global$splsda_perf <- extract_plsda_performance(pls_res)
     
     viz_report_plsda(
       pls_res = pls_res, drivers_df = top_drivers, metadata_viz = meta_stats_global, 

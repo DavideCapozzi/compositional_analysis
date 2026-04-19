@@ -60,8 +60,6 @@ if (!is.null(config$sample_selection$blacklist) && length(config$sample_selectio
     )
     
     # Apply filter
-    
-    # Apply filter
     target_samples <- setdiff(target_samples, samples_to_drop)
     mat_raw <- mat_raw[target_samples, , drop = FALSE]
     metadata_raw <- metadata_raw[match(target_samples, metadata_raw$Patient_ID), , drop = FALSE]

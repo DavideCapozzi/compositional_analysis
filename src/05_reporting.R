@@ -1,160 +1,165 @@
 # src/05_reporting.R
 # ==============================================================================
-# STEP 05: MASTER REPORTING
-# Description: Consolidates outputs from Step 03 and Step 04 payloads into
-#              a unified Excel Workbook, isolating I/O formatting.
+# STEP 05: REPORTING
+# Description: Compiles all analytical outputs into a single Master Excel 
+#              report and dedicated Meta-Analysis summaries.
 # ==============================================================================
 
 source("R/utils_io.R")
+source("R/modules_qc.R")
+source("R/modules_viz.R")
 
-message("\n=== PIPELINE STEP 5: MASTER REPORT GENERATION ===")
+message("\n=== PIPELINE STEP 5: REPORTING ===")
 
+# 1. Initialization
+# ------------------------------------------------------------------------------
 config <- load_config("config/global_params.yml")
 results_dir <- file.path(config$output_root, "results_analysis")
+meta_dir <- file.path(results_dir, "Meta_Analysis")
 
-payload03_path <- file.path(results_dir, "step03_payload.rds")
-payload04_path <- file.path(results_dir, "step04_payload.rds")
+if (!dir.exists(meta_dir)) dir.create(meta_dir, recursive = TRUE)
 
-if (!file.exists(payload03_path) || !file.exists(payload04_path)) {
-  stop("[Fatal] Required payloads missing. Ensure Steps 03 and 04 have completed.")
-}
+# Loading Payloads and Data
+data_file <- file.path(config$output_root, "01_data_processing", "data_processed.rds")
+if (!file.exists(data_file)) stop("[Fatal] Step 01 output not found.")
+DATA <- readRDS(data_file)
 
-payload03 <- readRDS(payload03_path)
-payload04 <- readRDS(payload04_path)
+payload03 <- readRDS(file.path(results_dir, "step03_payload.rds"))
+payload04 <- readRDS(file.path(results_dir, "step04_payload.rds"))
 
+# Initialize Master Workbook
 wb_master <- createWorkbook()
 
-# 1. WRITE GLOBAL STATISTICS
-message("   [Report] Compiling Global Statistics...")
+# 2. MASTER ANALYTICAL REPORT (Global Level)
+# ------------------------------------------------------------------------------
+addWorksheet(wb_master, "QC_Overview")
+writeData(wb_master, "QC_Overview", "Quality Control Summary", startRow = 1)
+
+# Global PERMANOVA results
 if (!is.null(payload03$global$permanova)) {
   addWorksheet(wb_master, "Global_PERMANOVA")
-  writeData(wb_master, "Global_PERMANOVA", payload03$global$permanova, rowNames = TRUE)
+  writeData(wb_master, "Global_PERMANOVA", payload03$global$permanova)
 }
-if (!is.null(payload03$global$dispersion)) {
-  addWorksheet(wb_master, "Global_Dispersion")
-  writeData(wb_master, "Global_Dispersion", payload03$global$dispersion, rowNames = TRUE)
+
+# sPLS-DA Model Performance (BER/Validation)
+if (!is.null(payload03$global$splsda_perf)) {
+  addWorksheet(wb_master, "Global_sPLSDA_Performance")
+  writeData(wb_master, "Global_sPLSDA_Performance", payload03$global$splsda_perf)
 }
-if (!is.null(payload03$global$pairwise_dispersion)) {
-  addWorksheet(wb_master, "All_Pairs_Dispersion")
-  writeData(wb_master, "All_Pairs_Dispersion", payload03$global$pairwise_dispersion)
-}
+
+# sPLS-DA Discriminant Markers
 if (!is.null(payload03$global$splsda_drivers)) {
   addWorksheet(wb_master, "Global_sPLSDA_Drivers")
   writeData(wb_master, "Global_sPLSDA_Drivers", payload03$global$splsda_drivers)
 }
 
-# 2. WRITE SCENARIO METRICS
-message("   [Report] Compiling Scenario Metrics...")
-combined_drivers_list <- list()
-
-for (scen_id in names(payload03$scenarios)) {
-  scen_data <- payload03$scenarios[[scen_id]]
-  net_data  <- payload04$scenarios[[scen_id]]
-  
-  if (!is.null(scen_data$dispersion)) {
-    disp_sheet <- safe_sheet_name(paste0(scen_id, "_Disp"))
-    addWorksheet(wb_master, disp_sheet); writeData(wb_master, disp_sheet, scen_data$dispersion, rowNames = TRUE)
-  }
-  if (!is.null(scen_data$permanova)) {
-    perm_sheet <- safe_sheet_name(paste0(scen_id, "_Perm"))
-    addWorksheet(wb_master, perm_sheet); writeData(wb_master, perm_sheet, scen_data$permanova, rowNames = TRUE)
-  }
-  if (!is.null(scen_data$drivers)) {
-    drv_sheet <- safe_sheet_name(paste0(scen_id, "_Drv"))
-    addWorksheet(wb_master, drv_sheet); writeData(wb_master, drv_sheet, scen_data$drivers)
-    
-    df <- scen_data$drivers
-    df$Scenario <- scen_id 
-    df_clean <- df %>%
-      dplyr::rename_with(.fn = ~ "Weight_Case_VS_Control_PC1", .cols = dplyr::matches("^Weight_.*_PC1$")) %>%
-      dplyr::rename_with(.fn = ~ "Weight_Case_VS_Control_PC2", .cols = dplyr::matches("^Weight_.*_PC2$")) %>%
-      dplyr::select(Scenario, Marker, dplyr::matches("^Weight_Case_VS_Control_PC[12]$"))
-    combined_drivers_list[[scen_id]] <- df_clean
-  }
-  
-  if (!is.null(net_data$edges_table)) {
-    net_sheet <- safe_sheet_name(paste0(scen_id, "_Net"))
-    addWorksheet(wb_master, net_sheet); writeData(wb_master, net_sheet, net_data$edges_table)
-  }
-  if (!is.null(net_data$sig_edges) && nrow(net_data$sig_edges) > 0) {
-    sig_sheet <- safe_sheet_name(paste0(scen_id, "_SigNet"))
-    addWorksheet(wb_master, sig_sheet); writeData(wb_master, sig_sheet, net_data$sig_edges)
-  }
-  
-  # --- Generate Local Topology Metrics Report ---
-  if (!is.null(net_data$topo_ctrl) || !is.null(net_data$topo_case)) {
-    # Extract labels safely from config
-    scen_conf <- purrr::keep(config$analysis_scenarios, ~ .x$id == scen_id)[[1]]
-    
-    topo_xlsx_path <- file.path(results_dir, scen_id, paste0(scen_id, "_Topology_Metrics.xlsx"))
-    wb_topo <- createWorkbook()
-    
-    if (!is.null(net_data$topo_ctrl)) {
-      sh_name <- safe_sheet_name(paste0("Topology_", scen_conf$control_label))
-      addWorksheet(wb_topo, sh_name); writeData(wb_topo, sh_name, net_data$topo_ctrl)
-    }
-    if (!is.null(net_data$topo_case)) {
-      sh_name <- safe_sheet_name(paste0("Topology_", scen_conf$case_label))
-      addWorksheet(wb_topo, sh_name); writeData(wb_topo, sh_name, net_data$topo_case)
-    }
-    if (!is.null(net_data$rewiring)) {
-      addWorksheet(wb_topo, "Rewiring_Analysis"); writeData(wb_topo, "Rewiring_Analysis", net_data$rewiring)
-    }
-    if (!is.null(net_data$edges_table)) {
-      addWorksheet(wb_topo, "Differential_Edges"); writeData(wb_topo, "Differential_Edges", net_data$edges_table)
-    }
-    
-    saveWorkbook(wb_topo, topo_xlsx_path, overwrite = TRUE)
-  }
-}
-
-if (length(combined_drivers_list) > 0) {
-  combined_drivers <- dplyr::bind_rows(combined_drivers_list)
-  if (nrow(combined_drivers) > 0) {
-    addWorksheet(wb_master, "All_Drivers_Summary")
-    writeData(wb_master, "All_Drivers_Summary", combined_drivers)
-  }
-}
-
-# 3. META-ANALYSIS SUMMARY
-message("   [Report] Compiling Meta-Analysis Summary...")
-diff_edges_list <- payload04$meta_analysis$diff_edges_list
-
-if (!is.null(diff_edges_list) && length(diff_edges_list) >= 2) {
+# 3. META-ANALYSIS: EDGE INTERSECTIONS
+# ------------------------------------------------------------------------------
+if (length(payload04$meta_analysis$diff_edges_list) >= 2) {
+  message("   [Report] Generating Meta-Analysis Edge Intersections...")
   wb_meta <- createWorkbook()
-  addWorksheet(wb_meta, "Summary")
-  m_comb <- ComplexHeatmap::make_comb_mat(diff_edges_list)
-  comb_names <- ComplexHeatmap::comb_name(m_comb)
-  summary_df <- data.frame()
   
-  for (nm in comb_names) {
-    edges_in_comb <- ComplexHeatmap::extract_comb(m_comb, nm)
-    if (length(edges_in_comb) > 0) {
-      set_indices <- as.numeric(strsplit(nm, "")[[1]])
-      involved_sets <- names(diff_edges_list)[which(set_indices == 1)]
-      set_label <- paste(involved_sets, collapse = " & ")
-      sheet_id <- paste0("Int_", nrow(summary_df) + 1)
-      
-      summary_df <- rbind(summary_df, data.frame(Intersection = set_label, Count = length(edges_in_comb), Sheet_Link = sheet_id))
-      addWorksheet(wb_meta, sheet_id)
-      details <- data.frame(Edge_ID = edges_in_comb) %>% separate(Edge_ID, into = c("Node_A", "Node_B"), sep = "~")
-      writeData(wb_meta, sheet_id, details)
-    }
+  diff_list <- payload04$meta_analysis$diff_edges_list
+  all_edges <- unique(unlist(diff_list))
+  
+  intersection_mat <- data.frame(Edge_ID = all_edges, stringsAsFactors = FALSE)
+  for (scen_id in names(diff_list)) {
+    intersection_mat[[scen_id]] <- intersection_mat$Edge_ID %in% diff_list[[scen_id]]
   }
-  writeData(wb_meta, "Summary", summary_df)
-  meta_dir <- file.path(results_dir, "Meta_Analysis")
+  
+  intersection_mat$Sum_Hits <- rowSums(intersection_mat[, -1])
+  intersection_mat <- intersection_mat[order(intersection_mat$Sum_Hits, decreasing = TRUE), ]
+  
+  addWorksheet(wb_meta, "Edge_Intersections")
+  writeData(wb_meta, "Edge_Intersections", intersection_mat)
+  
   saveWorkbook(wb_meta, file.path(meta_dir, "Differential_Intersections_List.xlsx"), overwrite = TRUE)
 }
 
-# 4. FINALIZE MASTER WORKBOOK
-sheet_names <- names(wb_master)
-if ("All_Drivers_Summary" %in% sheet_names) {
-  target_idx <- which(sheet_names == "All_Drivers_Summary")
-  other_idx <- setdiff(seq_along(sheet_names), target_idx)
-  openxlsx::worksheetOrder(wb_master) <- c(target_idx, other_idx)
+# 4. META-ANALYSIS: INVERTED EDGES (Phenotypic Rewiring)
+# ------------------------------------------------------------------------------
+message("   [Report] Checking for Inverted Edges across all scenarios...")
+wb_inverted <- createWorkbook()
+inverted_master_list <- list()
+
+for (scen_id in names(payload04$scenarios)) {
+  net_data <- payload04$scenarios[[scen_id]]
+  
+  scen_conf <- purrr::keep(config$analysis_scenarios, ~ .x$id == scen_id)
+  if (length(scen_conf) == 0) next
+  scen_conf <- scen_conf[[1]]
+  
+  if (!is.null(net_data$edges_table)) {
+    # Filter edges with sign inversion
+    inv_edges <- net_data$edges_table %>% 
+      dplyr::filter(Edge_Category == "Inverted")
+    
+    if (nrow(inv_edges) > 0) {
+      message(sprintf("      -> Found %d inverted edges in scenario: %s", nrow(inv_edges), scen_id))
+      
+      # Scenario-specific formatting (Keeping Node1 and Node2 here for detail)
+      inv_formatted <- inv_edges %>%
+        dplyr::rename(
+          Cor_Ctrl = dplyr::matches(paste0("^Spearman_", scen_conf$control_label, "$")),
+          Weight_Ctrl = dplyr::matches(paste0("^Pcor_", scen_conf$control_label, "$")),
+          Cor_Case = dplyr::matches(paste0("^Spearman_", scen_conf$case_label, "$")),
+          Weight_Case = dplyr::matches(paste0("^Pcor_", scen_conf$case_label, "$"))
+        ) %>%
+        dplyr::select(Node1, Node2, Cor_Ctrl, Weight_Ctrl, Cor_Case, Weight_Case, 
+                      Diff_Score, P_Value, FDR, 
+                      dplyr::matches("^Mech_"))
+      
+      # Add detailed sheet for this scenario
+      sh_inv_name <- safe_sheet_name(scen_id)
+      addWorksheet(wb_inverted, sh_inv_name)
+      writeData(wb_inverted, sh_inv_name, inv_formatted)
+      
+      # Prepare data for Master Summary collection
+      inv_summary_entry <- inv_formatted %>%
+        dplyr::mutate(
+          Scenario = scen_id,
+          Edge_ID = paste(pmin(Node1, Node2), pmax(Node1, Node2), sep = "~")
+        ) %>%
+        dplyr::select(Edge_ID, Node1, Node2, Scenario)
+      
+      inverted_master_list[[scen_id]] <- inv_summary_entry
+    }
+  }
 }
 
-master_report_path <- file.path(results_dir, "Multi_Scenario_Analysis_Report.xlsx")
+# Finalize Inverted Report
+if (length(inverted_master_list) > 0) {
+  # Master Summary: Removing Node1 and Node2 as they are redundant with Edge_ID
+  master_inv_df <- dplyr::bind_rows(inverted_master_list) %>%
+    dplyr::group_by(Edge_ID) %>%
+    dplyr::summarise(
+      Scenarios_Inverted = paste(Scenario, collapse = ", "),
+      Count_Inverted = dplyr::n(),
+      .groups = "drop"
+    ) %>%
+    dplyr::arrange(desc(Count_Inverted), Edge_ID)
+  
+  # Create the Master Summary sheet
+  addWorksheet(wb_inverted, "Master_Inverted_Summary")
+  writeData(wb_inverted, "Master_Inverted_Summary", master_inv_df)
+  
+  # Reorder to place the Master summary as the first sheet
+  n_sheets <- length(names(wb_inverted))
+  if (n_sheets > 1) {
+    worksheetOrder(wb_inverted) <- c(n_sheets, 1:(n_sheets - 1))
+  }
+  
+  inv_report_path <- file.path(meta_dir, "Inverted_Edges_MetaAnalysis_Report.xlsx")
+  saveWorkbook(wb_inverted, inv_report_path, overwrite = TRUE)
+  message(sprintf("   [Output] Inverted Edges Report saved: %s", inv_report_path))
+} else {
+  message("   [Info] No inverted edges found. Skipping specific report.")
+}
+
+# 5. Save Final Master Analytical Report
+# ------------------------------------------------------------------------------
+master_report_path <- file.path(results_dir, "Master_Analytical_Report.xlsx")
 saveWorkbook(wb_master, master_report_path, overwrite = TRUE)
-message(sprintf("   [Output] Master Report saved to: %s", master_report_path))
+
+message(sprintf("\n[Final] Reporting complete. Master file: %s", master_report_path))
 message("=== STEP 5 COMPLETE ===\n")
