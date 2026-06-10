@@ -243,6 +243,44 @@ cytoscape_export:
     exclude_conserved: false
     min_stability_freq_any: 0.95
     min_diff_score: 0.10
-    max_export_edges: 50 
-    
+    max_export_edges: 50
+
+# --- TRUSTWORTHY / RESPONSIBLE-AI MODULE (Phase 6) ---
+# Spine = specification-curve robustness (P1); supports = conformal abstention
+# (P2) + explanation-agreement audit (P3). P4/P5/P6 stay scaffolded behind a
+# clinical-metadata gate until survival/batch/demographics are supplied.
+trustworthy:
+  enabled: true
+  quick: true            # true = fast iteration grid; false = full grid (heavier)
+  from_raw_axes: false   # reserved hook for re-deriving QC/outlier axes from raw
+  tasks: ["00_HDvsTumor", "03_EPvsLS"]   # scenario ids to audit
+  multiverse:
+    representation: ["z", "raw_med", "raw_z"]
+    feature_space:  ["abundance", "with_edges", "edges_only"]
+    edge_threshold: [0.0, 0.10]
+    estimator:      ["ridge", "enet", "lasso", "rf"]
+    n_rep_quick: 6       # CV repeats per spec in quick mode
+    n_rep_full: 15       # CV repeats per spec in full mode
+    k: 5                 # CV folds
+    n_perm: 200          # permutation draws for the headline null
+  conformal:
+    alpha: 0.10          # target miscoverage -> ~90% coverage
+    n_rep: 150
+  explanation:
+    top_k: 10
+    sources: ["enet", "rf_perm", "splsda", "net_degree"]
+  # --- DATA-GATED pillars (auto-skip until columns exist in metadata) ---
+  survival:
+    enabled: true
+    models: ["coxnet", "rsf"]
+    time_col: null
+    event_col: null
+  confound:
+    enabled: true
+    batch_col: null
+  fairness:
+    enabled: true
+    subgroups: ["sex", "age_band", "cancer_type"]
+    min_stratum_n: 8
+
 EOF: TRUE

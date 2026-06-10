@@ -81,7 +81,11 @@ tryCatch({
     # --- PHASE 4: REPORT GENERATION ---
     message("\n>>> RUNNING PHASE 4: REPORT GENERATION <<<")
     source(here("src/05_reporting.R"), echo = FALSE)
-    
+
+    # --- PHASE 5: TRUSTWORTHY / RESPONSIBLE-AI MODULE ---
+    message("\n>>> RUNNING PHASE 5: TRUSTWORTHY AI <<<")
+    source(here("src/06_trustworthy_ai.R"), echo = FALSE)
+
     final_msg <- sprintf("\n=== PIPELINE FINISHED SUCCESSFULLY: %s ===", Sys.time())
     message(final_msg)
     

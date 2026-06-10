@@ -2,10 +2,13 @@
 .Rhistory
 .RData
 .Ruserdata
-
+network/
 *.Rproj
 .Renviron
 .Renviron.bak
 old*
 results*
+diagnostics/
+next_steps.md
 data/
+CLAUDE.md
