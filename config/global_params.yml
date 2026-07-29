@@ -4,7 +4,12 @@
 
 # --- Setup ---
 output_root: "results"
-project_name: "longsurvivors"
+# Output root is "{output_root}_{project_name}" and a re-run OVERWRITES it in place.
+# results_longsurvivors/ is the frozen 2026-06 reference that diagnostics/ scripts read by
+# hardcoded path -- do NOT point project_name back at it. Nothing under results*/ is in git.
+#   "longsurvivors_qcfix" = 3 cohorts under the 2026-07-29 per-panel QC (161 samples)
+#   "gbm"                 = the 4-cohort run; switch when the GBM sheet lands (see below)
+project_name: "longsurvivors_qcfix"
 input_file: "data/DB_standardizzatov5_intermedi.xlsx"
 
 transformation:
@@ -69,17 +74,53 @@ analysis_scenarios:
     control_label: "INT"
     control_groups: ["HNSCC_INT", "NSCLC_INT"]
 
+# =============================================================================
+# GBM ACTIVATION — apply all of this together when the GBM sheet lands.
+# Colours (above) and the cohorts entry are already staged.
+#
+# 1. Uncomment  GBM: "GBM"  under `cohorts:`.
+# 2. Append to `case_groups:`  ->  "GBM_EP", "GBM_INT", "GBM_LS"
+# 3. Add GBM_* into the pan-tumor scenarios above:
+#      00_HDvsTumor  case    += GBM_EP, GBM_LS      (pattern is EP+LS only)
+#      01_HDvsEP     case    += GBM_EP
+#      02_HDvsLS     case    += GBM_LS
+#      03_EPvsLS     case    += GBM_LS   control += GBM_EP
+#      04_HDvsINT    case    += GBM_INT
+#      05_EPvsINT    case    += GBM_INT  control += GBM_EP
+#      06_INTvsLS    case    += GBM_LS   control += GBM_INT
+# 4. Uncomment scenario 07 below (unique case_label -> GBM gets its own baseline).
+# 5. Set  project_name: "gbm"  and  trustworthy.quick: true  for the first run.
+# 6. Add "07_HDvsGBM" to trustworthy.tasks.
+#
+# CONSEQUENCE, state it in the methods: step 04 keys baselines by case_label, so
+# steps 3 above change the EP/INT/LS/Tumor baselines used by EVERY scenario sharing
+# those labels. No existing scenario stays comparable to a pre-GBM run. That is the
+# intended behaviour of pan-tumor inclusion, not a bug.
+#
+# GBM stages will be n~6-7, below stats.min_network_n (8), so GBM_EP/INT/LS get no
+# standalone baselines -- only the pooled groups and 07_HDvsGBM (n~20). Expected.
+#
+# Given naive-T was retired when a pooled p=0.001 became NSCLC-only p=1.000, every
+# pooled GBM-inclusive finding needs the within-disease check before it is claimed.
+# =============================================================================
+#  - id: "07_HDvsGBM"
+#    description: "GBM cohort against healthy donors - the only adequately powered GBM contrast"
+#    case_label: "GBM"
+#    case_groups: ["GBM_EP", "GBM_INT", "GBM_LS"]
+#    control_label: "HD"
+#    control_groups: ["Healthy_Donors"]
+
 # --- STRATIFICATION LOGIC ---
-# "selection" mode simply promotes the target column to be the main grouping variable.
 stratification:
-  mode: "selection"             # Mode: direct selection from metadata
   column: "Original_Source"     # Metadata column containing the precise group names
 
 # --- COHORTS MAPPING ---
+# key = macro Group label, value = Excel sheet name.
 cohorts:
   NSCLC: "NSCLC"
   HNSCC: "HNSCC"
   Healthy_Donors: "HD"
+  # GBM: "GBM"        # <-- uncomment when the GBM sheet exists (see GBM ACTIVATION below)
 
 marker_selection:
   whitelist: []      
@@ -89,20 +130,19 @@ sample_selection:
   #blacklist: ["DS51.fcs"]
   blacklist: ["HD51", "HNSCC21"]  
 
-hybrid_groups:
-  Differentiation: []
-  Lineage: []  
-  Treg_Status: []
-  
 metadata:
   subgroup_col: "Original_Source"
 
 # --- Quality Control ---
 qc:
-  max_na_row_pct: 0.45   
-  max_na_col_pct: 0.20  
+  max_na_row_pct: 0.45   # computed over each patient's OWN cohort panel (sporadic NAs only)
+  max_na_col_pct: 0.20
   remove_outliers: true
   outlier_conf_level: 0.99
+  # Drop markers that are not present in EVERY cohort's assay panel. Without this, a marker
+  # measured by 3 of 4 cohorts stays under max_na_col_pct and gets BPCA-imputed, fabricating
+  # values for a cohort that never ran the stain.
+  require_marker_in_all_panels: true
 
 # QC Reporting Configuration
 qc_reporting:
@@ -193,39 +233,36 @@ colors:
     LS: "#FFD700"   
     Tumor: "#8B0000"
 
-    INT: "#FFA500" 
-    NSCLC_INT: "#FF8C00" 
+    INT: "#FFA500"
+    NSCLC_INT: "#FF8C00"
     HNSCC_INT: "#FFB84D"
 
-  highlight: "#FFD700"  
+    # GBM (purple family, deliberately far from NSCLC red / HNSCC blue / INT orange).
+    # Safe to define before the data exists: unused keys are simply never looked up.
+    # Without these, GBM falls back to a cycled generic case colour that can collide
+    # with NSCLC -- get_palette() now warns when that happens.
+    GBM: "#7B3FA0"
+    GBM_EP: "#9932CC"
+    GBM_INT: "#B565D8"
+    GBM_LS: "#5D2E7A"
 
-  heatmap:
-    low: "#2166AC"    
-    mid: "#F7F7F7"    
-    high: "#B2182B"   
-  
-  plsda:
-    positive: "#CD5C5C" 
-    negative: "#4682B4" 
-    
-  distribution:
-    mean: "darkred"
-    median: "black"
+  highlight: "#FFD700"
 
 viz:
   heatmap_metadata: ["Group", "Original_Source"]
-  merge_case_groups: false
-  highlight_pattern: "_LS"
+  highlight_pattern: "_LS"   # NB: outranks parent-group colour, so ALL *_LS render identical
 
 # --- Inference Statistics ---
 stats:
   seed: 2025
   min_sample_size: 4
-  min_network_n: 3
+  # Minimum group size for building a baseline network. corpcor::pcor.shrink returns a
+  # plausible near-identity matrix at n=3 and the bootstrap CIs almost never cross zero,
+  # so a tiny group yields a confident-looking network that is pure noise.
+  min_network_n: 8
   min_variance: 0.000001
-  n_boot: 1000        
-  n_perm: 2000        
-  alpha: 0.05         
+  n_boot: 1000
+  n_perm: 2000
   pvalue_threshold: 0.05
   network_threshold_type: "absolute"
   network_edge_threshold: 0.075
@@ -245,15 +282,17 @@ cytoscape_export:
     min_diff_score: 0.10
     max_export_edges: 50
 
-# --- TRUSTWORTHY / RESPONSIBLE-AI MODULE (Phase 6) ---
+# --- TRUSTWORTHY / ROBUSTNESS AUDIT MODULE (Phase 6) ---
 # Spine = specification-curve robustness (P1); supports = conformal abstention
-# (P2) + explanation-agreement audit (P3). P4/P5/P6 stay scaffolded behind a
-# clinical-metadata gate until survival/batch/demographics are supplied.
+# (P2) + explanation-agreement audit (P3). P4/P5/P6 report PENDING behind a
+# clinical-metadata gate; they have no implementation yet.
+# NB: this is a robustness check, not a narrative -- the "trustworthy AI" framing
+# was retired 2026-07-24. It is what turned EP-vs-LS from "we found nothing" into
+# "nothing is there across 60 analytic choices".
 trustworthy:
   enabled: true
-  quick: true            # true = fast iteration grid; false = full grid (heavier)
-  from_raw_axes: false   # reserved hook for re-deriving QC/outlier axes from raw
-  tasks: ["00_HDvsTumor", "03_EPvsLS"]   # scenario ids to audit
+  quick: false           # true = fast iteration grid; false = full grid (heavier)
+  tasks: ["00_HDvsTumor", "03_EPvsLS"]   # explicit list -- new scenarios are NOT audited unless added here
   multiverse:
     representation: ["z", "raw_med", "raw_z"]
     feature_space:  ["abundance", "with_edges", "edges_only"]
@@ -267,20 +306,15 @@ trustworthy:
     alpha: 0.10          # target miscoverage -> ~90% coverage
     n_rep: 150
   explanation:
-    top_k: 10
-    sources: ["enet", "rf_perm", "splsda", "net_degree"]
-  # --- DATA-GATED pillars (auto-skip until columns exist in metadata) ---
+    top_k: 10            # sources are fixed in src/06_trustworthy_ai.R (enet, rf_perm, splsda, net_degree)
+  # --- DATA-GATED pillars: detected by tw_detect_clinical_meta(), reported as PENDING.
+  # No implementation exists yet -- supplying the columns unlocks detection only.
   survival:
     enabled: true
-    models: ["coxnet", "rsf"]
-    time_col: null
-    event_col: null
+    time_col: null       # e.g. "OS_time"
+    event_col: null      # e.g. "OS_event"
   confound:
     enabled: true
-    batch_col: null
+    batch_col: null      # e.g. "Batch" / "Acquisition_Date" -- the single highest-value metadata addition
   fairness:
     enabled: true
-    subgroups: ["sex", "age_band", "cancer_type"]
-    min_stratum_n: 8
-
-EOF: TRUE

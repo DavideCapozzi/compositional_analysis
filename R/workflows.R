@@ -137,16 +137,22 @@ run_scenario_pipeline <- function(scenario, full_mat, full_meta, config, out_dir
   # 5. sPLS-DA & Visualization
   valid_levels <- names(counts)[counts > 0]
   
-  # Enforce minimum 3 samples per class to safely execute CV without crashing mixOmics
-  if (length(valid_levels) >= 2 && min(counts[valid_levels]) >= 3) {
+  # Enforce a minimum class size before attempting CV. This honours config stats$min_sample_size
+  # rather than a hardcoded 3: at n=3 each CV fold holds a single sample per class, so the
+  # tuned keepX is essentially random while the resulting BER still looks publishable.
+  min_class_n <- if(!is.null(config$stats$min_sample_size)) config$stats$min_sample_size else 4
+  smallest_class <- if (length(valid_levels) > 0) min(counts[valid_levels]) else 0
+
+  if (length(valid_levels) < 2 || smallest_class < min_class_n) {
+    message(sprintf("      [Skip] sPLS-DA: smallest class n=%d (< min_sample_size=%d) or <2 classes.",
+                    smallest_class, min_class_n))
+  } else {
     tryCatch({
       n_comp <- if(!is.null(config$multivariate$n_comp)) config$multivariate$n_comp else 2
       cv_folds <- if(!is.null(config$multivariate$validation_folds)) config$multivariate$validation_folds else 5
-      actual_folds <- min(cv_folds, min(counts[valid_levels]))
-      
-      # Secondary safety constraint for fold assignment
-      if (actual_folds < 3) actual_folds <- 3
-      
+      # Folds can never exceed the smallest class, otherwise a fold holds zero cases.
+      actual_folds <- min(cv_folds, smallest_class)
+
       spls_res <- run_splsda_model(
         data_z = sub_mat,
         metadata = sub_meta, 
@@ -190,10 +196,12 @@ run_scenario_pipeline <- function(scenario, full_mat, full_meta, config, out_dir
         res_list$drivers <- drivers_df
       }
     }, error = function(e) message(sprintf("      [Fail] sPLS-DA failed: %s", e$message)))
-  } else {
-    message("      [Skip] sPLS-DA skipped: Class size too small for reliable CV (<3).")
   }
-  
+
+  # Record the group sizes this scenario was actually run on, so downstream readers can
+  # tell an adequately powered contrast from a marginal one.
+  res_list$class_counts <- counts[valid_levels]
+
   return(res_list)
 }
 
@@ -263,8 +271,8 @@ run_network_scenario_pipeline <- function(scenario, base_ctrl, base_case, config
   dev.off()
   
   pdf(file.path(out_dir, paste0(scenario$id, "_Plot_Networks.pdf")), width = 12, height = 6)
-  if(!is.null(topo_ctrl)) print(plot_network_structure(net_res$adj_final$ctrl, net_res$networks$ctrl, title = paste("Control:", scenario$control_label), min_cor = 0))
-  if(!is.null(topo_case)) print(plot_network_structure(net_res$adj_final$case, net_res$networks$case, title = paste("Case:", scenario$case_label), min_cor = 0))
+  if(!is.null(topo_ctrl)) print(plot_network_structure(net_res$adj_final$ctrl, net_res$networks$ctrl, title = sprintf("Control: %s (n=%d)", scenario$control_label, nrow(base_ctrl$mat)), min_cor = 0))
+  if(!is.null(topo_case)) print(plot_network_structure(net_res$adj_final$case, net_res$networks$case, title = sprintf("Case: %s (n=%d)", scenario$case_label, nrow(base_case$mat)), min_cor = 0))
   dev.off()
   
   # 4. CYTOSCAPE EXPORT (Dynamic Filtering via Config)
@@ -287,7 +295,11 @@ run_network_scenario_pipeline <- function(scenario, base_ctrl, base_case, config
           dplyr::starts_with("Mech_"), dplyr::starts_with("Is_Stable_"), dplyr::starts_with("StabFreq_")
         ) %>%
         dplyr::rename(Interaction = Edge_Category)
-      
+
+      # Stamp the group sizes behind this contrast onto every exported edge.
+      diff_net$N_Ctrl <- nrow(base_ctrl$mat)
+      diff_net$N_Case <- nrow(base_case$mat)
+
       readr::write_csv(diff_net, file.path(target_dir, paste0(scenario$id, file_suffix, ".csv")))
       
       diff_nodes <- unique(c(edges_to_export$Node1, edges_to_export$Node2))
@@ -308,6 +320,8 @@ run_network_scenario_pipeline <- function(scenario, base_ctrl, base_case, config
         }
         num_cols <- names(all_nodes)[sapply(all_nodes, is.numeric)]
         all_nodes[num_cols] <- lapply(all_nodes[num_cols], function(x) replace(x, is.na(x), 0))
+        all_nodes$N_Ctrl <- nrow(base_ctrl$mat)
+        all_nodes$N_Case <- nrow(base_case$mat)
         readr::write_csv(all_nodes, file.path(target_dir, paste0(scenario$id, file_suffix, "_node_attributes.csv")))
       }
     }

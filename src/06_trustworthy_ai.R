@@ -78,6 +78,10 @@ for (task_id in tw_cfg$tasks) {
   scen <- scen_map[[task_id]]
   if (is.null(scen)) { message(sprintf("[TW] task %s not in analysis_scenarios; skipping.", task_id)); next }
   message(sprintf("\n--- Task %s: %s vs %s ---", task_id, scen$case_label, scen$control_label))
+
+  # Guarded: repeated stratified CV, glmnet and pROC all error on very small or
+  # single-class folds. A failing audit task must not abort the module.
+  tryCatch({
   task <- tw_make_task(DATA, scen$case_groups, scen$control_groups,
                        config$stratification$column)
 
@@ -131,6 +135,13 @@ for (task_id in tw_cfg$tasks) {
     sprintf("- **P3 explanation agreement:** mean Spearman %.2f, mean top-%d Jaccard %.2f across {%s}.",
             agree$mean_rho, tw_cfg$explanation$top_k, agree$mean_jaccard, paste(agree$sources, collapse = ", ")),
     "")
+
+  }, error = function(e) {
+    message(sprintf("      [WARN] Trustworthy task '%s' failed: %s", task_id, conditionMessage(e)))
+    summary_lines <<- c(summary_lines,
+      sprintf("## %s — SKIPPED", task_id),
+      sprintf("- Audit failed: %s", conditionMessage(e)), "")
+  })
 }
 
 # ---- conformal & explanation roll-ups to Excel ----

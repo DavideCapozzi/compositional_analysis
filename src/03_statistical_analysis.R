@@ -58,12 +58,19 @@ current_palette <- get_palette(config, match_groups = clean_targets)[clean_targe
 if (any(is.na(current_palette))) current_palette[is.na(current_palette)] <- "grey50"
 
 # 2.1 Global PERMANOVA
+# Guarded like every other analysis in this step: test_coda_permanova() hard-stops on NA
+# input and adonis2 errors on a single-level factor, either of which would otherwise abort
+# steps 04/05/06 via the re-stop() in main.R.
 message("   [Stats] Running Global PERMANOVA (Multiclass)...")
-perm_global <- test_coda_permanova(
-  data_input = df_stats_global[, c("Group", safe_markers)], 
-  group_col = "Group", n_perm = config$stats$n_perm
-)
-payload03$global$permanova <- as.data.frame(perm_global)
+tryCatch({
+  perm_global <- test_coda_permanova(
+    data_input = df_stats_global[, c("Group", safe_markers)],
+    group_col = "Group", n_perm = config$stats$n_perm
+  )
+  payload03$global$permanova <- as.data.frame(perm_global)
+}, error = function(e) {
+  message(sprintf("      [WARN] Global PERMANOVA failed: %s", conditionMessage(e)))
+})
 
 # 2.2 Global Dispersion
 message("   [Stats] Running Global Dispersion Check...")

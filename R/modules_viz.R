@@ -68,14 +68,30 @@ get_palette <- function(config, match_groups = NULL) {
     }
   }
   
+  # Root matching MUST be attempted before the positional fallback. Assigning generic case
+  # colours by index first would shadow it entirely: "HNSCC_EP" would take case_cols[1]
+  # (NSCLC's red) instead of inheriting HNSCC's blue, and inserting a new cohort into
+  # case_groups would re-shuffle the colour of every group after it.
   if (!is.null(case_groups_cfg)) {
+    n_fallback <- 0
     for (i in seq_along(case_groups_cfg)) {
       grp <- case_groups_cfg[i]
-      if(is.null(final_palette[[grp]])) {
-        # Cycle through available case colors
-        col_idx <- (i - 1) %% length(case_cols) + 1
-        final_palette[[grp]] <- case_cols[col_idx]
+      if (!is.null(final_palette[[grp]])) next
+
+      # Priority 1: inherit from the root cohort (e.g. "HNSCC_EP" -> "HNSCC")
+      root_name <- strsplit(grp, "_")[[1]][1]
+      if (!is.null(final_palette[[root_name]])) {
+        final_palette[[grp]] <- final_palette[[root_name]]
+        next
       }
+
+      # Priority 2: generic case colour, cycled over groups that actually needed a fallback
+      # (not over the whole case_groups list, so ordering is stable under insertion).
+      n_fallback <- n_fallback + 1
+      col_idx <- (n_fallback - 1) %% length(case_cols) + 1
+      final_palette[[grp]] <- case_cols[col_idx]
+      warning(sprintf("[Viz] No colour configured for group '%s' (no exact entry, no root match for '%s'). Falling back to %s, which may collide with another group -- add it to colors$groups.",
+                      grp, root_name, final_palette[[grp]]))
     }
   }
   
@@ -83,7 +99,8 @@ get_palette <- function(config, match_groups = NULL) {
   if (!is.null(match_groups)) {
     # Remove NAs and convert to character
     unique_data_groups <- unique(as.character(na.omit(match_groups)))
-    
+    n_unknown <- 0
+
     for (g_data in unique_data_groups) {
       
       # Case A: Already has a color (Exact match)
@@ -103,8 +120,13 @@ get_palette <- function(config, match_groups = NULL) {
         if (g_data %in% ctrl_groups_cfg) {
           final_palette[[g_data]] <- ctrl_col
         } else {
-          # Default fallback for unknown groups
-          final_palette[[g_data]] <- case_cols[1] 
+          # Default fallback for unknown groups. Cycle rather than always taking
+          # case_cols[1], otherwise every uncoloured cohort renders identically to the
+          # first case group and becomes indistinguishable in PCA/heatmap figures.
+          n_unknown <- n_unknown + 1
+          final_palette[[g_data]] <- case_cols[(n_unknown - 1) %% length(case_cols) + 1]
+          warning(sprintf("[Viz] No colour configured for group '%s' (and no root match for '%s'). Using fallback %s -- add it to colors$groups.",
+                          g_data, root_name, final_palette[[g_data]]))
         }
       }
     }
@@ -1130,71 +1152,6 @@ viz_plot_edge_density <- function(pcor_mat, adj_mat = NULL, threshold = 0.15, gr
     theme(
       plot.title = element_text(face = "bold", size = 14, hjust = 0.5),
       plot.subtitle = element_text(size = 11, hjust = 0.5, color = "gray40")
-    ) +
-    xlim(-1, 1) 
-  
-  return(p)
-}
-
-#' @title Plot Partial vs Raw Correlation Density Overlay
-#' @description 
-#' Visualizes the distribution of partial correlation values (Shrinkage) overlaid
-#' on top of the raw Pearson correlation values to demonstrate the shrinkage effect.
-#' 
-#' @param pcor_mat Numeric matrix of partial correlations.
-#' @param cor_mat Numeric matrix of raw Pearson correlations.
-#' @param adj_mat Optional. Adjacency matrix (0/1) of stable edges.
-#' @param threshold Numeric. The magnitude threshold used for filtering.
-#' @param group_label String. Label for the group (e.g., "Healthy").
-#' @return A ggplot object.
-viz_plot_edge_density_overlay <- function(pcor_mat, cor_mat, adj_mat = NULL, threshold = 0.15, group_label = "") {
-  
-  require(ggplot2)
-  
-  vals_pcor <- pcor_mat[upper.tri(pcor_mat)]
-  vals_cor <- cor_mat[upper.tri(cor_mat)]
-  
-  df_plot <- rbind(
-    data.frame(Value = vals_cor, Metric = "Pearson (Raw)"),
-    data.frame(Value = vals_pcor, Metric = "Partial (Shrinkage)")
-  )
-  
-  # Set factor levels so Pearson renders behind Partial
-  df_plot$Metric <- factor(df_plot$Metric, levels = c("Pearson (Raw)", "Partial (Shrinkage)"))
-  
-  if (!is.null(adj_mat)) {
-    n_stable <- sum(adj_mat[upper.tri(adj_mat)])
-    sub_text <- sprintf("Threshold: |rho| > %.4f | Final Stable Edges: %d", threshold, n_stable)
-  } else {
-    pct_kept <- round((sum(abs(vals_pcor) >= threshold) / length(vals_pcor)) * 100, 1)
-    sub_text <- sprintf("Threshold: |rho| > %.4f (Keeps %.1f%% of Partial edges)", threshold, pct_kept)
-  }
-  
-  p <- ggplot(df_plot, aes(x = Value, fill = Metric, color = Metric)) +
-    geom_density(alpha = 0.4, size = 0.8)
-  
-  # Conditionally add Threshold Lines
-  if (threshold > 0) {
-    p <- p + geom_vline(xintercept = c(-threshold, threshold), 
-                        linetype = "dashed", color = "red", size = 0.8)
-  }
-  
-  p <- p + 
-    scale_fill_manual(values = c("Pearson (Raw)" = "gray60", "Partial (Shrinkage)" = "steelblue")) +
-    scale_color_manual(values = c("Pearson (Raw)" = "gray40", "Partial (Shrinkage)" = "#1F4E79")) +
-    labs(
-      title = paste("Correlation Distribution Overlay:", group_label),
-      subtitle = sub_text,
-      x = "Correlation Value",
-      y = "Density",
-      fill = "Metric",
-      color = "Metric"
-    ) +
-    theme_bw(base_size = 12) +
-    theme(
-      plot.title = element_text(face = "bold", size = 14, hjust = 0.5),
-      plot.subtitle = element_text(size = 11, hjust = 0.5, color = "gray40"),
-      legend.position = "bottom"
     ) +
     xlim(-1, 1) 
   

@@ -167,10 +167,14 @@ tw_make_task <- function(DATA, case_groups, control_groups,
   idx <- which(src %in% c(case_groups, control_groups))
   y   <- factor(ifelse(src[idx] %in% case_groups, "case", "control"),
                 levels = c("control", "case"))
+  # Cancer type = the root of the Original_Source label ("NSCLC_LS" -> "NSCLC",
+  # "Healthy_Donors" -> "Healthy"). Derived generically so a newly added cohort is not
+  # silently bucketed into an existing type.
+  ctype <- vapply(strsplit(as.character(src[idx]), "_"), `[`, character(1), 1)
+
   list(idx = idx, y = y,
        src = src[idx],
-       ctype = ifelse(grepl("^HNSCC", src[idx]), "HNSCC",
-                ifelse(grepl("^NSCLC", src[idx]), "NSCLC", "HD")))
+       ctype = ctype)
 }
 
 # --- P1: specification curve --------------------------------------------------
@@ -392,32 +396,10 @@ tw_detect_clinical_meta <- function(metadata, cfg = list()) {
                 sex = sex_col, age = age_col))
 }
 
-# --- P4/P5/P6: scaffolds (guarded; emit pending message until data arrives) ---
-
-#' P5 scaffold: penalized-Cox / RSF survival modelling with calibration + UQ.
-#' Implemented behind the data gate; returns a "pending" stub otherwise.
-tw_fit_survival_uq <- function(X, time, event, cfg = list()) {
-  if (missing(time) || missing(event) || is.null(time) || is.null(event)) {
-    return(list(status = "pending",
-                message = "P5 survival: clinical time-to-event not supplied."))
-  }
-  stop("tw_fit_survival_uq: implement once clinical survival data is wired in.")
-}
-
-#' P4 scaffold: is the HD-vs-tumor separation batch or biology?
-tw_test_confound <- function(X, group, batch) {
-  if (missing(batch) || is.null(batch)) {
-    return(list(status = "pending",
-                message = "P4 confound: acquisition batch/date not supplied."))
-  }
-  stop("tw_test_confound: implement once batch/date data is wired in.")
-}
-
-#' P6 scaffold: subgroup calibration & performance parity.
-tw_fairness_audit <- function(preds, subgroups, min_stratum_n = 8) {
-  if (missing(subgroups) || is.null(subgroups)) {
-    return(list(status = "pending",
-                message = "P6 fairness: subgroup (sex/age/type) not supplied."))
-  }
-  stop("tw_fairness_audit: implement once demographics are wired in.")
-}
+# --- P4/P5/P6 ---
+# The data-gated pillars (confound / survival / fairness) are detected by
+# tw_detect_clinical_meta() above and reported as PENDING by src/06_trustworthy_ai.R.
+# No implementation exists yet: the previous stubs here were never called from anywhere
+# and stop()ped if they ever were, so they have been removed rather than left as a
+# misleading suggestion that the pillars are wired up. Implement them here when the
+# clinical metadata (batch / time-to-event / demographics) actually lands.

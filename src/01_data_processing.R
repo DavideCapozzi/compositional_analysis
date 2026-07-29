@@ -15,6 +15,73 @@ message("\n=== PIPELINE STEP 1: INGESTION + QC + HYBRID TRANSFORM ===")
 config <- load_config("config/global_params.yml")
 
 raw_data <- load_raw_data(config)
+panel_map <- attr(raw_data, "panels")
+
+# 1.1 Cohort Integrity Validation
+# ------------------------------------------------------------------------------
+# These are hard stops by design. Every one of them guards a failure mode that would
+# otherwise let the pipeline finish "successfully" with silently wrong results.
+validate_cohort_integrity <- function(raw_data, config) {
+
+  strat_col <- config$stratification$column
+
+  # (a) Every configured cohort actually contributed rows.
+  present_cohorts <- unique(as.character(raw_data$Group))
+  missing_cohorts <- setdiff(names(config$cohorts), present_cohorts)
+  if (length(missing_cohorts) > 0) {
+    stop(sprintf("[FATAL] Configured cohort(s) contributed zero samples: %s",
+                 paste(missing_cohorts, collapse = ", ")))
+  }
+
+  # (b) Patient_ID unique across all sheets. Row-name indexing is used pervasively
+  # downstream and returns only the FIRST match for a duplicated ID.
+  dup_ids <- raw_data$Patient_ID[duplicated(raw_data$Patient_ID)]
+  if (length(dup_ids) > 0) {
+    stop(sprintf("[FATAL] %d duplicate Patient_ID(s) across cohort sheets: %s.\nIDs must be unique (prefix them per cohort).",
+                 length(unique(dup_ids)), paste(unique(dup_ids), collapse = ", ")))
+  }
+
+  # (c) Every group in the data is claimed by the analysis config. A group present in the
+  # data but absent from case_groups is excluded from every plot and statistic while STILL
+  # shifting the global z-scoring for everyone else.
+  declared <- unique(c(unlist(config$control_group), unlist(config$case_groups)))
+  observed <- unique(as.character(raw_data[[strat_col]]))
+  undeclared <- setdiff(observed, declared)
+  if (length(undeclared) > 0) {
+    stop(sprintf("[FATAL] Group(s) present in the data but absent from control_group/case_groups: %s.\nThey would be silently excluded from all analyses while still affecting the global scaling.",
+                 paste(undeclared, collapse = ", ")))
+  }
+
+  # (d) Scenario ids are unique. They become directory names and payload list keys, and
+  # collide silently (overwriting each other's outputs).
+  scen_ids <- vapply(config$analysis_scenarios, function(s) s$id, character(1))
+  if (any(duplicated(scen_ids))) {
+    stop(sprintf("[FATAL] Duplicate analysis_scenarios id(s): %s",
+                 paste(unique(scen_ids[duplicated(scen_ids)]), collapse = ", ")))
+  }
+
+  # (e) Scenario labels must differ within a scenario (duplicate factor levels error out
+  # in workflows.R) and every referenced group must exist in the data.
+  for (s in config$analysis_scenarios) {
+    if (identical(s$case_label, s$control_label)) {
+      stop(sprintf("[FATAL] Scenario '%s' has case_label == control_label ('%s').",
+                   s$id, s$case_label))
+    }
+    unknown <- setdiff(unlist(c(s$case_groups, s$control_groups)), observed)
+    if (length(unknown) > 0) {
+      stop(sprintf("[FATAL] Scenario '%s' references group(s) not present in the data: %s",
+                   s$id, paste(unknown, collapse = ", ")))
+    }
+  }
+
+  message(sprintf("[Check] Cohort integrity OK: %d cohorts, %d samples, %d groups, %d scenarios.",
+                  length(present_cohorts), nrow(raw_data), length(observed), length(scen_ids)))
+}
+
+validate_cohort_integrity(raw_data, config)
+
+# Snapshot pre-QC counts so we can verify no cohort is decimated by filtering.
+counts_pre_qc <- table(as.character(raw_data$Group))
 
 # 2. Setup Initial Matrices
 # ------------------------------------------------------------------------------
@@ -122,12 +189,13 @@ qc_config_basic$remove_outliers <- FALSE
 
 message("   [QC-A] Filtering Missingness and Zero Variance on RAW data...")
 qc_result <- run_qc_pipeline(
-  mat_raw = mat_raw, 
-  metadata = metadata_raw, 
-  qc_config = qc_config_basic, 
+  mat_raw = mat_raw,
+  metadata = metadata_raw,
+  qc_config = qc_config_basic,
   stratification_col = config$metadata$subgroup_col,
   dropped_markers_apriori = data.frame(),
-  dropped_samples_apriori = dropped_samples_apriori
+  dropped_samples_apriori = dropped_samples_apriori,
+  panel_map = panel_map
 )
 
 # Extract cleaned datasets from Step A
@@ -199,6 +267,25 @@ metadata_raw <- meta_clean_basic
 raw_data <- raw_data %>% filter(Patient_ID %in% rownames(mat_raw))
 
 message(sprintf("[QC] Final Dimensions: %d Samples x %d Markers", nrow(mat_raw), ncol(mat_raw)))
+
+# --- Post-QC Retention Check ---
+# A cohort whose assay panel differs from the others can be silently gutted by missingness
+# filtering. Fail loudly rather than analysing a cohort that has quietly disappeared.
+counts_post_qc <- table(as.character(metadata_raw$Group))
+max_loss <- 0.20
+for (coh in names(counts_pre_qc)) {
+  n_pre  <- as.integer(counts_pre_qc[[coh]])
+  n_post <- if (coh %in% names(counts_post_qc)) as.integer(counts_post_qc[[coh]]) else 0L
+  loss   <- 1 - (n_post / n_pre)
+
+  message(sprintf("   [QC] Retention %-16s %3d -> %3d (%.0f%% lost)", coh, n_pre, n_post, loss * 100))
+
+  if (loss > max_loss) {
+    stop(sprintf(
+      "[FATAL] Cohort '%s' lost %.0f%% of its samples during QC (%d -> %d), above the %.0f%% ceiling.\nThis usually means its assay panel differs from the other cohorts. Inspect QC_Filtering_Report.xlsx before proceeding.",
+      coh, loss * 100, n_pre, n_post, max_loss * 100))
+  }
+}
 
 # Calculate imputation details on the final filtered matrix before saving report
 impute_info_df <- data.frame(

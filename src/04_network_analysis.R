@@ -53,16 +53,25 @@ for (label in names(macro_groups)) {
   sub_meta <- DATA$metadata %>% dplyr::filter(.data[[strat_col]] %in% macro_groups[[label]])
   sub_mat <- DATA$hybrid_data_z[sub_meta$Patient_ID, DATA$hybrid_markers, drop=FALSE]
   
-  if (nrow(sub_mat) < if(!is.null(config$stats$min_network_n)) config$stats$min_network_n else 5) next
-  
+  n_group <- nrow(sub_mat)
+  min_net_n <- if(!is.null(config$stats$min_network_n)) config$stats$min_network_n else 5
+  if (n_group < min_net_n) {
+    message(sprintf("      [Skip] Baseline '%s': n=%d below min_network_n=%d.", label, n_group, min_net_n))
+    next
+  }
+
   var_thresh <- if(!is.null(config$stats$min_variance)) config$stats$min_variance else 1e-6
   vars <- apply(sub_mat, 2, var, na.rm = TRUE)
   valid_cols <- names(vars)[!(vars < var_thresh | is.na(vars))]
   if (length(valid_cols) < 2) next
-  
+
   auto_cores <- max(1, parallel::detectCores(logical = TRUE) - 1, na.rm = TRUE)
   target_cores <- if(!is.null(config$stats$n_cores) && config$stats$n_cores != "auto") as.numeric(config$stats$n_cores) else auto_cores
-  
+
+  # Guarded: compute_universal_baseline() can stop() outright ("All bootstrap iterations
+  # failed") on a degenerate small-n group. Without this, one bad cohort kills steps 04/05/06.
+  tryCatch({
+
   base_obj_raw <- compute_universal_baseline(
     mat = sub_mat[, valid_cols, drop = FALSE], label = label,
     n_boot = if(!is.null(config$stats$n_boot)) config$stats$n_boot else 100, seed = if(!is.null(config$stats$seed)) config$stats$seed else 123,
@@ -73,7 +82,7 @@ for (label in names(macro_groups)) {
   
   all_features <- colnames(sub_mat)
   baselines[[label]] <- list(
-    label = base_obj_raw$label, mat = sub_mat, 
+    label = base_obj_raw$label, mat = sub_mat, n_samples = n_group,
     pcor = pad_matrix(base_obj_raw$pcor, all_features, 0), raw_cor = pad_matrix(base_obj_raw$raw_cor, all_features, 0),
     stability = pad_matrix(base_obj_raw$stability, all_features, 0), 
     stability_freq = pad_matrix(base_obj_raw$stability_freq, all_features, 0),
@@ -105,6 +114,8 @@ for (label in names(macro_groups)) {
     # Process Main Network
     base_edges <- base_edges_res$main
     if (!is.null(base_edges) && nrow(base_edges) > 0) {
+      # Stamp the sample size so an n=6 network can never be mistaken for an n=53 one.
+      base_edges$Group_N <- n_group
       readr::write_csv(base_edges, file.path(cyto_base_dir, paste0(label, "_baseline_network.csv")))
       
       adj_export <- matrix(0, nrow = length(nodes), ncol = length(nodes), dimnames = list(nodes, nodes))
@@ -116,6 +127,7 @@ for (label in names(macro_groups)) {
       topo_base <- calculate_node_topology(adj_export)
       if (!is.null(topo_base)) {
         topo_base <- annotate_marker_categories(topo_base, config)
+        topo_base$Group_N <- n_group
         readr::write_csv(topo_base, file.path(cyto_base_dir, paste0(label, "_node_attributes.csv")))
       }
     }
@@ -127,6 +139,7 @@ for (label in names(macro_groups)) {
       cyto_base_rem_dir <- file.path(cyto_base_dir, "remaining_baselines")
       if (!dir.exists(cyto_base_rem_dir)) dir.create(cyto_base_rem_dir, recursive = TRUE)
       
+      base_edges_rem$Group_N <- n_group
       readr::write_csv(base_edges_rem, file.path(cyto_base_rem_dir, paste0(label, "_baseline_network_remaining.csv")))
       
       adj_export_rem <- matrix(0, nrow = length(nodes), ncol = length(nodes), dimnames = list(nodes, nodes))
@@ -138,10 +151,15 @@ for (label in names(macro_groups)) {
       topo_base_rem <- calculate_node_topology(adj_export_rem)
       if (!is.null(topo_base_rem)) {
         topo_base_rem <- annotate_marker_categories(topo_base_rem, config)
+        topo_base_rem$Group_N <- n_group
         readr::write_csv(topo_base_rem, file.path(cyto_base_rem_dir, paste0(label, "_baseline_network_remaining_node_attributes.csv")))
       }
     }
   }
+
+  }, error = function(e) {
+    message(sprintf("      [WARN] Baseline '%s' (n=%d) failed: %s", label, n_group, conditionMessage(e)))
+  })
 }
 
 # 2. DIFFERENTIAL OVERLAYS (Delegated to Workflows)
@@ -159,20 +177,28 @@ for (scen in config$analysis_scenarios) {
   }
   
   spls_drivers <- if (!is.null(payload03$scenarios[[scen$id]]$drivers)) payload03$scenarios[[scen$id]]$drivers else NULL
-  
-  scen_res <- run_network_scenario_pipeline(
-    scenario = scen, base_ctrl = base_ctrl, base_case = base_case, 
-    config = config, out_dir = file.path(results_dir, scen$id), spls_drivers = spls_drivers
-  )
-  
-  if (!is.null(scen_res)) {
-    payload04$scenarios[[scen$id]] <- scen_res
-    if(length(scen_res$sig_edge_ids) > 0) {
-      diff_edges_list[[scen$id]] <- scen_res$sig_edge_ids
-      tgt_grp <- scen$case_label
-      scenario_colors[scen$id] <- if(!is.null(config$colors$groups[[tgt_grp]])) config$colors$groups[[tgt_grp]] else "grey50"
+
+  # Guarded per-scenario: the permutation loop can stop() ("All permutations failed due to
+  # zero variance") on degenerate groups. One bad scenario must not kill the remaining ones.
+  tryCatch({
+    scen_res <- run_network_scenario_pipeline(
+      scenario = scen, base_ctrl = base_ctrl, base_case = base_case,
+      config = config, out_dir = file.path(results_dir, scen$id), spls_drivers = spls_drivers
+    )
+
+    if (!is.null(scen_res)) {
+      scen_res$n_ctrl <- base_ctrl$n_samples
+      scen_res$n_case <- base_case$n_samples
+      payload04$scenarios[[scen$id]] <- scen_res
+      if(length(scen_res$sig_edge_ids) > 0) {
+        diff_edges_list[[scen$id]] <- scen_res$sig_edge_ids
+        tgt_grp <- scen$case_label
+        scenario_colors[scen$id] <- if(!is.null(config$colors$groups[[tgt_grp]])) config$colors$groups[[tgt_grp]] else "grey50"
+      }
     }
-  }
+  }, error = function(e) {
+    message(sprintf("      [WARN] Scenario '%s' failed: %s", scen$id, conditionMessage(e)))
+  })
 }
 
 # 3. META-ANALYSIS EXPORT

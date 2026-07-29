@@ -32,49 +32,70 @@ load_config <- function(config_path = "config/global_params.yml") {
 
 #' @title Load Raw Data (Excel)
 #' @description Iterates over sheets defined in config and merges them, preserving metadata.
+#'   Records which marker columns were physically present in each cohort's sheet (its
+#'   "panel"), so that downstream QC can distinguish STRUCTURAL missingness (marker absent
+#'   from that cohort's assay panel) from SPORADIC missingness (marker measured but blank).
+#'   Conflating the two penalises a cohort for markers its lab never ran.
 #' @param config The loaded configuration object.
-#' @return A raw dataframe with Patient_ID, Group, and Subgroup info.
+#' @return A raw dataframe with Patient_ID, Group, and Subgroup info. Carries a "panels"
+#'   attribute: a named list of cohort -> character vector of marker names in that sheet.
 load_raw_data <- function(config) {
   input_file <- config$input_file
   subgroup_col <- config$metadata$subgroup_col # Read from config
-  
+
   if (!file.exists(input_file)) {
     stop(sprintf("Input data file not found: %s", input_file))
   }
-  
+
   df_list <- list()
+  panel_list <- list()
+  failed_sheets <- character(0)
   message("[IO] Loading Excel sheets...")
-  
+
   for (cohort_name in names(config$cohorts)) {
     sheet_name <- config$cohorts[[cohort_name]]
-    
+
     tryCatch({
       # Load sheet
       raw_tmp <- read_excel(input_file, sheet = sheet_name)
-      
+
       # Standardize Patient_ID
       colnames(raw_tmp)[1] <- "Patient_ID"
-      
+
       # 1. Identify Marker columns (exclude ID and the specific Subgroup column)
       cols_to_exclude <- c("Patient_ID")
       if (!is.null(subgroup_col) && subgroup_col %in% colnames(raw_tmp)) {
         cols_to_exclude <- c(cols_to_exclude, subgroup_col)
       }
-      
+
       # 2. Convert ONLY marker columns to numeric
       clean_tmp <- raw_tmp %>%
         mutate(across(-all_of(cols_to_exclude), ~suppressWarnings(as.numeric(as.character(.))))) %>%
         mutate(Group = cohort_name, .after = Patient_ID)
-      
+
       df_list[[cohort_name]] <- clean_tmp
-      message(sprintf("    -> Loaded %s: %d samples", cohort_name, nrow(clean_tmp)))
-      
+      # Record this cohort's assay panel (marker columns physically present in the sheet)
+      panel_list[[cohort_name]] <- setdiff(colnames(raw_tmp), cols_to_exclude)
+
+      message(sprintf("    -> Loaded %s: %d samples, %d markers in panel",
+                      cohort_name, nrow(clean_tmp), length(panel_list[[cohort_name]])))
+
     }, error = function(e) {
+      failed_sheets <<- c(failed_sheets, sheet_name)
       warning(sprintf("    [WARN] Failed to load sheet '%s': %s", sheet_name, e$message))
     })
   }
-  
+
+  # A silently-missing cohort is the worst failure mode here: the run would continue with
+  # fewer cohorts than configured and still report success. Fail loudly instead.
+  if (length(failed_sheets) > 0) {
+    stop(sprintf(
+      "[FATAL] %d configured cohort sheet(s) could not be read: %s.\nCheck 'cohorts:' in the config against the sheet names in %s.",
+      length(failed_sheets), paste(failed_sheets, collapse = ", "), input_file))
+  }
+
   full_data <- bind_rows(df_list)
+  attr(full_data, "panels") <- panel_list
   return(full_data)
 }
 
@@ -273,12 +294,14 @@ save_qc_report <- function(qc_list, out_path, config = NULL) {
   
   # Section 5: Markers Metrics
   n_markers_apriori <- if(!is.null(qc_list$dropped_markers_apriori)) nrow(qc_list$dropped_markers_apriori) else 0
+  n_markers_panel <- if(!is.null(qc_list$n_col_panel_mismatch)) qc_list$n_col_panel_mismatch else 0
   totals_markers <- c(qc_list$n_col_init,
                       n_markers_apriori,
+                      n_markers_panel,
                       qc_list$n_col_dropped,
                       qc_list$n_col_zerovar,
                       qc_list$n_col_final)
-  metrics_markers <- c("Initial Markers", "Filtered Markers (A Priori)", "Filtered Markers (High NA)", "Filtered Markers (Zero Var)", "Final Markers")
+  metrics_markers <- c("Initial Markers", "Filtered Markers (A Priori)", "Filtered Markers (Panel Mismatch)", "Filtered Markers (High NA)", "Filtered Markers (Zero Var)", "Final Markers")
   df_markers <- data.frame(Metric = metrics_markers, Total = totals_markers, stringsAsFactors = FALSE)
   
   writeData(wb, "Summary", "MARKERS METRICS:", startRow = curr_row)
@@ -358,6 +381,13 @@ save_qc_report <- function(qc_list, out_path, config = NULL) {
     curr_row_det <- curr_row_det + nrow(qc_list$dropped_markers_apriori) + 3
   }
   
+  if (!is.null(qc_list$dropped_markers_panel) && nrow(qc_list$dropped_markers_panel) > 0) {
+    writeData(wb, "Details_Filtered", "Markers Excluded (Panel Mismatch - not measured by every cohort):", startRow = curr_row_det)
+    addStyle(wb, "Details_Filtered", createStyle(textDecoration = "bold"), rows = curr_row_det, cols = 1)
+    writeData(wb, "Details_Filtered", qc_list$dropped_markers_panel, startRow = curr_row_det + 1)
+    curr_row_det <- curr_row_det + nrow(qc_list$dropped_markers_panel) + 3
+  }
+
   if (nrow(qc_list$dropped_cols_detail) > 0) {
     writeData(wb, "Details_Filtered", "Filtered Markers (QC):", startRow = curr_row_det)
     addStyle(wb, "Details_Filtered", createStyle(textDecoration = "bold"), rows = curr_row_det, cols = 1)
@@ -405,13 +435,30 @@ save_qc_report <- function(qc_list, out_path, config = NULL) {
 #'              with Excel's strict sheet naming rules (max 31 chars, no reserved symbols).
 #' @param name String to sanitize and truncate.
 #' @param max_len Integer. Maximum character length (default 31).
-#' @return Truncated and sanitized string safe for openxlsx.
-safe_sheet_name <- function(name, max_len = 31) {
+#' @param existing Character vector of names already used in the workbook. When supplied, a
+#'   numeric suffix is appended to avoid the duplicate-name error from openxlsx::addWorksheet.
+#'   Two scenario ids sharing a 31-character prefix would otherwise abort reporting.
+#' @return Truncated, sanitized and (optionally) de-duplicated string safe for openxlsx.
+safe_sheet_name <- function(name, max_len = 31, existing = character(0)) {
   # Replace invalid Excel sheet characters with underscores
   clean_name <- gsub("[\\[\\]\\*\\/\\\\\\?\\:]", "_", name)
-  
-  # Remove leading/trailing spaces that Excel dislikes
+
+  # Remove leading/trailing spaces and apostrophes that Excel rejects
   clean_name <- trimws(clean_name)
-  
-  return(substr(clean_name, 1, max_len))
+  clean_name <- gsub("^'+|'+$", "", clean_name)
+  if (!nzchar(clean_name)) clean_name <- "Sheet"
+
+  candidate <- substr(clean_name, 1, max_len)
+
+  if (length(existing) > 0 && candidate %in% existing) {
+    i <- 2
+    repeat {
+      suffix <- paste0("_", i)
+      candidate <- paste0(substr(clean_name, 1, max_len - nchar(suffix)), suffix)
+      if (!candidate %in% existing) break
+      i <- i + 1
+    }
+  }
+
+  return(candidate)
 }

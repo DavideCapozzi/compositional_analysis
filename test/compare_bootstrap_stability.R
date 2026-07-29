@@ -1,5 +1,11 @@
 # test/compare_bootstrap_stability.R
 # ==============================================================================
+# !! STALE — DOES NOT RUN (verified 2026-07-29) !!
+# This script reads `Multi_Scenario_Analysis_Report.xlsx`, which the pipeline no longer
+# produces; src/05_reporting.R now writes `Master_Analytical_Report.xlsx`. It also points
+# at `results_longsurvivors_onecore/`, which does not exist. Kept only as a sketch of the
+# stability-comparison approach — rewrite the paths before using it.
+# ==============================================================================
 # BOOTSTRAP STABILITY DIAGNOSTICS
 # Description: Compares two Multi_Scenario_Analysis_Report.xlsx outputs 
 #              to evaluate RNG/Parallelization variance on edge stability.

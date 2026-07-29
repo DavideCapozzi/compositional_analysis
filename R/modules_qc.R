@@ -99,8 +99,36 @@ detect_pca_outliers <- function(mat, groups, conf_level = 0.99) {
   return(is_outlier)
 }
 
+#' @title Row Missingness on a Per-Cohort Panel Basis
+#' @description
+#' Computes each row's missingness fraction over only those markers that the row's own
+#' cohort actually measured. Falls back to the plain union-of-all-markers rate when no
+#' panel map is supplied, or for any row whose cohort is not present in the map.
+#' @param mat Numeric matrix (Samples x Markers).
+#' @param metadata Dataframe aligned to mat, carrying the cohort in a "Group" column.
+#' @param panel_map Named list of cohort -> marker names, or NULL.
+#' @return Numeric vector of missingness fractions, one per row of mat.
+.row_na_own_panel <- function(mat, metadata = NULL, panel_map = NULL) {
+
+  if (is.null(panel_map) || is.null(metadata) || !"Group" %in% colnames(metadata)) {
+    return(rowMeans(is.na(mat)))
+  }
+
+  cohorts <- as.character(metadata[["Group"]])
+  out <- numeric(nrow(mat))
+
+  for (i in seq_len(nrow(mat))) {
+    own <- panel_map[[cohorts[i]]]
+    cols <- if (is.null(own)) colnames(mat) else intersect(colnames(mat), own)
+    # A cohort with no overlap at all would give 0/0; treat it as fully missing.
+    out[i] <- if (length(cols) == 0) 1 else mean(is.na(mat[i, cols]))
+  }
+
+  return(out)
+}
+
 #' @title Run Quality Control Pipeline
-#' @description 
+#' @description
 #' Filters the data matrix based on variance, missingness, and multivariate outliers.
 #' Logs dropped items and updates the summary report with group breakdowns.
 #' 
@@ -110,11 +138,16 @@ detect_pca_outliers <- function(mat, groups, conf_level = 0.99) {
 #' @param stratification_col String. Column name for detailed group breakdown (e.g., Original_Source).
 #' @param dropped_markers_apriori Dataframe of markers dropped by config.
 #' @param dropped_samples_apriori Dataframe of samples dropped by config.
+#' @param panel_map Named list of cohort -> marker names present in that cohort's sheet.
+#'   When supplied, row missingness is computed over each patient's OWN panel, so a cohort
+#'   is not penalised for markers its assay never measured. NULL reproduces the legacy
+#'   behaviour (missingness over the union of all panels).
 #' @return A list containing the filtered 'data' and the 'report'.
-run_qc_pipeline <- function(mat_raw, metadata, qc_config, 
+run_qc_pipeline <- function(mat_raw, metadata, qc_config,
                             stratification_col = "Group",
                             dropped_markers_apriori = NULL,
-                            dropped_samples_apriori = NULL) {
+                            dropped_samples_apriori = NULL,
+                            panel_map = NULL) {
   
   message("[QC] Running Quality Control...")
   
@@ -137,10 +170,13 @@ run_qc_pipeline <- function(mat_raw, metadata, qc_config,
     dropped_samples_apriori = dropped_samples_apriori, 
     
     n_col_zerovar = 0,
-    dropped_rows_detail = data.frame(Patient_ID = character(), NA_Percent = numeric(), 
+    dropped_rows_detail = data.frame(Patient_ID = character(), NA_Percent = numeric(),
                                      Reason = character(), Original_Source = character(),
                                      stringsAsFactors = FALSE),
     dropped_cols_detail = data.frame(Marker = character(), NA_Percent = numeric()),
+    dropped_markers_panel = data.frame(Marker = character(), Absent_From = character(),
+                                       stringsAsFactors = FALSE),
+    n_col_panel_mismatch = 0,
     n_row_dropped = 0,
     n_col_dropped = 0
   )
@@ -158,13 +194,43 @@ run_qc_pipeline <- function(mat_raw, metadata, qc_config,
     curr_mat <- curr_mat[, -const_cols, drop = FALSE]
   }
   
+  # 1b. Drop markers not measured by EVERY cohort (panel mismatch)
+  # A marker absent from one cohort's panel sits well below max_na_col_pct once that cohort
+  # is a minority of the sample set, so it survives column filtering and is then BPCA-imputed
+  # -- fabricating values for an assay that was never run. Dropping it is the honest option.
+  if (!is.null(panel_map) && length(panel_map) > 1 &&
+      isTRUE(qc_config$require_marker_in_all_panels)) {
+    shared_markers <- Reduce(intersect, panel_map)
+    panel_mismatch <- setdiff(colnames(curr_mat), shared_markers)
+
+    if (length(panel_mismatch) > 0) {
+      message(sprintf("   [QC] Dropping %d markers absent from at least one cohort panel.",
+                      length(panel_mismatch)))
+      absent_from <- vapply(panel_mismatch, function(mk) {
+        paste(names(panel_map)[!vapply(panel_map, function(p) mk %in% p, logical(1))],
+              collapse = ", ")
+      }, character(1))
+
+      qc_summary$dropped_markers_panel <- data.frame(
+        Marker = panel_mismatch,
+        Absent_From = unname(absent_from),
+        stringsAsFactors = FALSE
+      )
+      qc_summary$n_col_panel_mismatch <- length(panel_mismatch)
+      curr_mat <- curr_mat[, shared_markers[shared_markers %in% colnames(curr_mat)], drop = FALSE]
+    }
+  }
+
   # 2. Filter by Missingness (Rows - Patients)
-  row_na_freq <- rowMeans(is.na(curr_mat))
+  # Count only SPORADIC missingness: markers that this patient's own cohort panel actually
+  # measured. Counting structural gaps here penalises narrow-panel cohorts and, when a new
+  # wide-panel cohort is added, can silently wipe out an entire existing group.
+  row_na_freq <- .row_na_own_panel(curr_mat, metadata = curr_meta, panel_map = panel_map)
   drop_row_na <- which(row_na_freq > qc_config$max_na_row_pct)
-  
+
   if (length(drop_row_na) > 0) {
     pids <- rownames(curr_mat)[drop_row_na]
-    message(sprintf("   [QC] Dropping %d patients with >%.0f%% missingness.", 
+    message(sprintf("   [QC] Dropping %d patients with >%.0f%% missingness (own-panel basis).",
                     length(pids), qc_config$max_na_row_pct * 100))
     
     # Capture Original_Source info for report (Protected against NULL)

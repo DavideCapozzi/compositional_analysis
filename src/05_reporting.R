@@ -96,33 +96,44 @@ for (scen_id in names(payload04$scenarios)) {
     
     if (nrow(inv_edges) > 0) {
       message(sprintf("      -> Found %d inverted edges in scenario: %s", nrow(inv_edges), scen_id))
-      
-      # Scenario-specific formatting (Keeping Node1 and Node2 here for detail)
-      inv_formatted <- inv_edges %>%
-        dplyr::rename(
-          Cor_Ctrl = dplyr::matches(paste0("^Spearman_", scen_conf$control_label, "$")),
-          Weight_Ctrl = dplyr::matches(paste0("^Pcor_", scen_conf$control_label, "$")),
-          Cor_Case = dplyr::matches(paste0("^Spearman_", scen_conf$case_label, "$")),
-          Weight_Case = dplyr::matches(paste0("^Pcor_", scen_conf$case_label, "$"))
-        ) %>%
-        dplyr::select(Node1, Node2, Cor_Ctrl, Weight_Ctrl, Cor_Case, Weight_Case, 
-                      Diff_Score, P_Value, FDR, 
-                      dplyr::matches("^Mech_"))
-      
-      # Add detailed sheet for this scenario
-      sh_inv_name <- safe_sheet_name(scen_id)
-      addWorksheet(wb_inverted, sh_inv_name)
-      writeData(wb_inverted, sh_inv_name, inv_formatted)
-      
-      # Prepare data for Master Summary collection
-      inv_summary_entry <- inv_formatted %>%
-        dplyr::mutate(
-          Scenario = scen_id,
-          Edge_ID = paste(pmin(Node1, Node2), pmax(Node1, Node2), sep = "~")
-        ) %>%
-        dplyr::select(Edge_ID, Node1, Node2, Scenario)
-      
-      inverted_master_list[[scen_id]] <- inv_summary_entry
+
+      # Guarded: the renames below are matches()-based, so a label mismatch silently renames
+      # nothing and the following select() then errors on missing columns, aborting the run.
+      tryCatch({
+        # Scenario-specific formatting (Keeping Node1 and Node2 here for detail)
+        inv_formatted <- inv_edges %>%
+          dplyr::rename(
+            Cor_Ctrl = dplyr::matches(paste0("^Spearman_", scen_conf$control_label, "$")),
+            Weight_Ctrl = dplyr::matches(paste0("^Pcor_", scen_conf$control_label, "$")),
+            Cor_Case = dplyr::matches(paste0("^Spearman_", scen_conf$case_label, "$")),
+            Weight_Case = dplyr::matches(paste0("^Pcor_", scen_conf$case_label, "$"))
+          ) %>%
+          dplyr::select(Node1, Node2, Cor_Ctrl, Weight_Ctrl, Cor_Case, Weight_Case,
+                        Diff_Score, P_Value, FDR,
+                        dplyr::matches("^Mech_"))
+
+        # Carry the group sizes so an inverted edge from a tiny group is identifiable.
+        if (!is.null(net_data$n_ctrl)) inv_formatted$N_Ctrl <- net_data$n_ctrl
+        if (!is.null(net_data$n_case)) inv_formatted$N_Case <- net_data$n_case
+
+        # Add detailed sheet for this scenario (de-duplicated against existing sheet names)
+        sh_inv_name <- safe_sheet_name(scen_id, existing = names(wb_inverted))
+        addWorksheet(wb_inverted, sh_inv_name)
+        writeData(wb_inverted, sh_inv_name, inv_formatted)
+
+        # Prepare data for Master Summary collection
+        inv_summary_entry <- inv_formatted %>%
+          dplyr::mutate(
+            Scenario = scen_id,
+            Edge_ID = paste(pmin(Node1, Node2), pmax(Node1, Node2), sep = "~")
+          ) %>%
+          dplyr::select(Edge_ID, Node1, Node2, Scenario)
+
+        inverted_master_list[[scen_id]] <- inv_summary_entry
+      }, error = function(e) {
+        message(sprintf("      [WARN] Inverted-edge report for '%s' failed: %s",
+                        scen_id, conditionMessage(e)))
+      })
     }
   }
 }
