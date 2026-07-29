@@ -8,9 +8,9 @@ output_root: "results"
 # results_longsurvivors/ is the frozen 2026-06 reference that diagnostics/ scripts read by
 # hardcoded path -- do NOT point project_name back at it. Nothing under results*/ is in git.
 #   "longsurvivors_qcfix" = 3 cohorts under the 2026-07-29 per-panel QC (161 samples)
-#   "gbm"                 = the 4-cohort run; switch when the GBM sheet lands (see below)
-project_name: "longsurvivors_qcfix"
-input_file: "data/DB_standardizzatov5_intermedi.xlsx"
+#   "gbm"                 = the 4-cohort run (GBM activated 2026-07-29, see below)
+project_name: "gbm"
+input_file: "data/DB_standardizzatov6_GBM.xlsx"
 
 transformation:
   method: "logit" # Options: "logit" (for FACS percentages/proportions), "none" (for continuous unbounded data)
@@ -20,7 +20,8 @@ input_format: "percentage"  # Options: "percentage" (0-100) or "proportion" (0-1
 # Define here exactly which groups form the analysis.
 # Names must match the values in the 'stratification.column' (DATA$metadata$Original_Source).
 control_group: "Healthy_Donors"
-case_groups: ["HNSCC_EP", "NSCLC_EP", "HNSCC_INT", "NSCLC_INT", "NSCLC_LS", "HNSCC_LS"] 
+case_groups: ["HNSCC_EP", "NSCLC_EP", "HNSCC_INT", "NSCLC_INT", "NSCLC_LS", "HNSCC_LS",
+              "GB_EP", "GB_INT", "GB_LS"]
 
 # --- ANALYSIS SCENARIOS (Config-Driven Orchestration) ---
 # Each item here triggers a full analysis cycle (Hypothesis -> Multivariate -> Network)
@@ -28,87 +29,80 @@ analysis_scenarios:
   - id: "00_HDvsTumor"
     description: "Global comparison of Healthy Donors against all cancer patients (EP + LS)"
     case_label: "Tumor"
-    case_groups: ["HNSCC_EP", "NSCLC_EP", "HNSCC_LS", "NSCLC_LS"]
+    case_groups: ["HNSCC_EP", "NSCLC_EP", "HNSCC_LS", "NSCLC_LS", "GB_EP", "GB_LS"]
     control_label: "HD"
     control_groups: ["Healthy_Donors"]
 
   - id: "01_HDvsEP"
     description: "Characterizing the disease signature"
     case_label: "EP"
-    case_groups: ["HNSCC_EP", "NSCLC_EP"]
+    case_groups: ["HNSCC_EP", "NSCLC_EP", "GB_EP"]
     control_label: "HD"
     control_groups: ["Healthy_Donors"]
-    
+
   - id: "02_HDvsLS"
     description: "Checking if Long Survivors return to healthy phenotype"
     case_label: "LS"
-    case_groups: ["HNSCC_LS", "NSCLC_LS"]
+    case_groups: ["HNSCC_LS", "NSCLC_LS", "GB_LS"]
     control_label: "HD"
     control_groups: ["Healthy_Donors"]
-    
+
   - id: "03_EPvsLS"
     description: "Identifying resistance features (Long survivors vs Early Progressors)"
     case_label: "LS"
-    case_groups: ["HNSCC_LS", "NSCLC_LS"]
+    case_groups: ["HNSCC_LS", "NSCLC_LS", "GB_LS"]
     control_label: "EP"
-    control_groups: ["HNSCC_EP", "NSCLC_EP"]
+    control_groups: ["HNSCC_EP", "NSCLC_EP", "GB_EP"]
 
   - id: "04_HDvsINT"
     description: "Defining typical patient inter-tumor signature"
     case_label: "INT"
-    case_groups: ["HNSCC_INT", "NSCLC_INT"]
+    case_groups: ["HNSCC_INT", "NSCLC_INT", "GB_INT"]
     control_label: "HD"
     control_groups: ["Healthy_Donors"]
 
   - id: "05_EPvsINT"
     description: "Identifying other EP features"
     case_label: "INT"
-    case_groups: ["HNSCC_INT", "NSCLC_INT"]
+    case_groups: ["HNSCC_INT", "NSCLC_INT", "GB_INT"]
     control_label: "EP"
-    control_groups: ["HNSCC_EP", "NSCLC_EP"]
+    control_groups: ["HNSCC_EP", "NSCLC_EP", "GB_EP"]
 
   - id: "06_INTvsLS"
     description: "Identifying other LS features"
     case_label: "LS"
-    case_groups: ["HNSCC_LS", "NSCLC_LS"]
+    case_groups: ["HNSCC_LS", "NSCLC_LS", "GB_LS"]
     control_label: "INT"
-    control_groups: ["HNSCC_INT", "NSCLC_INT"]
+    control_groups: ["HNSCC_INT", "NSCLC_INT", "GB_INT"]
+
+  - id: "07_HDvsGBM"
+    description: "GBM cohort against healthy donors - the only adequately powered GBM contrast"
+    case_label: "GBM"
+    case_groups: ["GB_EP", "GB_INT", "GB_LS"]
+    control_label: "HD"
+    control_groups: ["Healthy_Donors"]
 
 # =============================================================================
-# GBM ACTIVATION — apply all of this together when the GBM sheet lands.
-# Colours (above) and the cohorts entry are already staged.
+# GBM ACTIVATED 2026-07-29 (DB_standardizzatov6_GBM.xlsx).
+# NB the data calls the sheet "GB" and the strata "GB_EP"/"GB_INT"/"GB_LS", not "GBM_*"
+# as this block originally anticipated. Config follows the DATA. "GBM" survives only as
+# the cohort key (Group) and as scenario 07's case_label / baseline name.
 #
-# 1. Uncomment  GBM: "GBM"  under `cohorts:`.
-# 2. Append to `case_groups:`  ->  "GBM_EP", "GBM_INT", "GBM_LS"
-# 3. Add GBM_* into the pan-tumor scenarios above:
-#      00_HDvsTumor  case    += GBM_EP, GBM_LS      (pattern is EP+LS only)
-#      01_HDvsEP     case    += GBM_EP
-#      02_HDvsLS     case    += GBM_LS
-#      03_EPvsLS     case    += GBM_LS   control += GBM_EP
-#      04_HDvsINT    case    += GBM_INT
-#      05_EPvsINT    case    += GBM_INT  control += GBM_EP
-#      06_INTvsLS    case    += GBM_LS   control += GBM_INT
-# 4. Uncomment scenario 07 below (unique case_label -> GBM gets its own baseline).
-# 5. Set  project_name: "gbm"  and  trustworthy.quick: true  for the first run.
-# 6. Add "07_HDvsGBM" to trustworthy.tasks.
+# CONSEQUENCE, state it in the methods: step 04 keys baselines by case_label, so folding
+# GB_* into scenarios 00-06 changes the EP/INT/LS/Tumor baselines used by EVERY scenario
+# sharing those labels. No existing scenario stays comparable to a pre-GBM run. That is
+# the intended behaviour of pan-tumor inclusion, not a bug.
 #
-# CONSEQUENCE, state it in the methods: step 04 keys baselines by case_label, so
-# steps 3 above change the EP/INT/LS/Tumor baselines used by EVERY scenario sharing
-# those labels. No existing scenario stays comparable to a pre-GBM run. That is the
-# intended behaviour of pan-tumor inclusion, not a bug.
+# GB stages are n=6/10/7, at or below stats.min_network_n (8), so GB_EP/INT/LS get no
+# standalone baselines -- only the pooled groups and 07_HDvsGBM (GBM baseline, n=23).
 #
-# GBM stages will be n~6-7, below stats.min_network_n (8), so GBM_EP/INT/LS get no
-# standalone baselines -- only the pooled groups and 07_HDvsGBM (n~20). Expected.
+# Marker cost of adding GB: ZERO. Its 44-marker panel is a superset of the 31 markers the
+# 3-cohort run retained; the 2 markers lost from the raw panel intersection (M-MDSC,
+# LOX1-PMN-MDSC) were already being dropped by qc.max_na_col_pct.
 #
 # Given naive-T was retired when a pooled p=0.001 became NSCLC-only p=1.000, every
 # pooled GBM-inclusive finding needs the within-disease check before it is claimed.
 # =============================================================================
-#  - id: "07_HDvsGBM"
-#    description: "GBM cohort against healthy donors - the only adequately powered GBM contrast"
-#    case_label: "GBM"
-#    case_groups: ["GBM_EP", "GBM_INT", "GBM_LS"]
-#    control_label: "HD"
-#    control_groups: ["Healthy_Donors"]
 
 # --- STRATIFICATION LOGIC ---
 stratification:
@@ -120,7 +114,7 @@ cohorts:
   NSCLC: "NSCLC"
   HNSCC: "HNSCC"
   Healthy_Donors: "HD"
-  # GBM: "GBM"        # <-- uncomment when the GBM sheet exists (see GBM ACTIVATION below)
+  GBM: "GB"           # key = macro Group label; value = the sheet name, which is "GB"
 
 marker_selection:
   whitelist: []      
@@ -238,13 +232,15 @@ colors:
     HNSCC_INT: "#FFB84D"
 
     # GBM (purple family, deliberately far from NSCLC red / HNSCC blue / INT orange).
-    # Safe to define before the data exists: unused keys are simply never looked up.
     # Without these, GBM falls back to a cycled generic case colour that can collide
     # with NSCLC -- get_palette() now warns when that happens.
+    # "GBM" is the cohort Group / scenario-07 case_label; "GB_*" are the Original_Source
+    # strata as spelled in the data. Both spellings are looked up, so both are defined.
     GBM: "#7B3FA0"
-    GBM_EP: "#9932CC"
-    GBM_INT: "#B565D8"
-    GBM_LS: "#5D2E7A"
+    GB: "#7B3FA0"
+    GB_EP: "#9932CC"
+    GB_INT: "#B565D8"
+    GB_LS: "#5D2E7A"
 
   highlight: "#FFD700"
 
@@ -291,8 +287,8 @@ cytoscape_export:
 # "nothing is there across 60 analytic choices".
 trustworthy:
   enabled: true
-  quick: false           # true = fast iteration grid; false = full grid (heavier)
-  tasks: ["00_HDvsTumor", "03_EPvsLS"]   # explicit list -- new scenarios are NOT audited unless added here
+  quick: true            # true = fast iteration grid; false = full grid (heavier)
+  tasks: ["00_HDvsTumor", "03_EPvsLS", "07_HDvsGBM"]   # explicit list -- new scenarios are NOT audited unless added here
   multiverse:
     representation: ["z", "raw_med", "raw_z"]
     feature_space:  ["abundance", "with_edges", "edges_only"]
